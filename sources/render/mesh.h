@@ -3,7 +3,7 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include <map>
+#include <unordered_map>
 #include <optional>
 #include <3dmath.h>
 
@@ -21,7 +21,7 @@ struct Mesh
   };
 
   std::vector<Bone> bones;
-  std::map<std::string, int> bonesMap;
+  std::unordered_map<std::string, int> bonesMap;
 
   Mesh(uint32_t vertexArrayBufferObject, int numIndices) :
     vertexArrayBufferObject(vertexArrayBufferObject),
