@@ -10,6 +10,7 @@ extern void game_init();
 extern void game_update();
 extern void game_render();
 extern void imgui_render();
+extern void close_game();
 
 typedef void *SDL_GLContext;
 
@@ -58,6 +59,7 @@ void init_application(const char *project_name, int width, int height, bool full
 
 void close_application()
 {
+  close_game();
   ImGui_ImplOpenGL3_Shutdown();
   ImGui_ImplSDL2_Shutdown();
   ImGui::DestroyContext();

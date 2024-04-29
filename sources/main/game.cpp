@@ -178,13 +178,14 @@ void imgui_render()
     const auto &skeleton = *character.skeleton_;
     size_t nodeCount = skeleton.num_joints();
 
-    if (ImGui::Begin("Skeleton view"))
-    {
-      for (size_t i = 0; i < nodeCount; i++)
-      {
-        ImGui::Text("%d) %s", int(i), skeleton.joint_names()[i]);
-      }
-    }
+    // if (ImGui::Begin("Skeleton view"))
+    // {
+    //   for (size_t i = 0; i < nodeCount; i++)
+    //   {
+    //     ImGui::Text("%d) %s", int(i), skeleton.joint_names()[i]);
+    //   }
+    // }
+    // ImGui::End();
 
     if (ImGui::Begin("Animation list")) {
     std::vector<const char *> animations(animationList.size() + 1);
@@ -315,7 +316,8 @@ void render_character(const Character &character, const mat4 &cameraProjView, ve
   { 
     float distanceToParent = 0.0f;
 
-    int parentId = skeleton.ref->parent[i];
+    int parentId = skeleton.joint_parents()[i];
+    glm::mat4 boneTm   =  character.transform * to_glm(character.models_[i]);  
     if (parentId != -1 && parentId != 0 && parentId != 1) {
       // alignas(16) glm::vec3 offset;
       // ozz::math::Store3Ptr(character.models_[parentId].cols[3] - character.models_[i].cols[3],
@@ -323,8 +325,7 @@ void render_character(const Character &character, const mat4 &cameraProjView, ve
       // glm::mat4 globTm = to_glm(character.models_[i]);    
       // offset = inverse(globTm) * glm::vec4(offset, .0f);
 
-      glm::mat4 parentTm = to_glm(character.models_[i]);   
-      glm::mat4 boneTm = to_glm(character.models_[i]);     
+      glm::mat4 parentTm =  character.transform * to_glm(character.models_[parentId]);      
 
       vec3 parentPos = parentTm[3];
       // vec3 parentPos = parentBone.bindPose[3];
@@ -334,11 +335,11 @@ void render_character(const Character &character, const mat4 &cameraProjView, ve
       draw_bone(parentPos, bonePos, darkGreenColor, 0.1f);
     }
 
-    // const float arrowLength = (distanceToParent + 0.1) / 5.0;
-    // constexpr float arrowSize = 0.004f;
-    // draw_arrow(skeleton.globalTm[i], vec3(0), vec3(arrowLength, 0, 0), vec3(1, 0, 0), arrowSize);
-    // draw_arrow(skeleton.globalTm[i], vec3(0), vec3(0, arrowLength, 0), vec3(0, 1, 0), arrowSize);
-    // draw_arrow(skeleton.globalTm[i], vec3(0), vec3(0, 0, arrowLength), vec3(0, 0, 1), arrowSize);
+    const float arrowLength = (distanceToParent + 0.1) / 5.0;
+    constexpr float arrowSize = 0.004f;
+    draw_arrow(boneTm, vec3(0), vec3(arrowLength, 0, 0), vec3(1, 0, 0), arrowSize);
+    draw_arrow(boneTm, vec3(0), vec3(0, arrowLength, 0), vec3(0, 1, 0), arrowSize);
+    draw_arrow(boneTm, vec3(0), vec3(0, 0, arrowLength), vec3(0, 0, 1), arrowSize);
   }
 
 }
