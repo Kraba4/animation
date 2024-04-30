@@ -17,6 +17,7 @@
 #include "ozz/animation/runtime/skeleton.h"
 #include "ozz/base/maths/simd_math.h"
 #include "ozz/base/maths/soa_transform.h"
+#include "ozz/animation/offline/animation_optimizer.h"
 
 struct UserCamera
 {
@@ -65,10 +66,15 @@ static struct {
 } visualisation_params;
 
 static struct {
+  float tolerance;
+  float distance;
   float speed = 1;
   bool pause = false;
   bool loop = true;
+  bool optimized = false;
 } animation_params;
+
+static AnimationInfo animation_info;
 
 #include <filesystem>
 static std::vector<std::string> scan_animations(const char *path)
@@ -210,16 +216,20 @@ void imgui_render()
     }
     ImGui::End();
 
+    static int item = 0;
     if (ImGui::Begin("Animation list")) {
-      static int item = 0;
       if (ImGui::ComboWithFilter("##anim", &item, animationList)) {
         AnimationPtr animation;
         if (item > 0)
         {
-          SceneAsset sceneAsset = load_scene(animationList[item].c_str(),
-                                             SceneAsset::LoadScene::Skeleton | SceneAsset::LoadScene::Animation);
-          if (!sceneAsset.animations.empty())
+          SceneAsset sceneAsset;
+          sceneAsset = load_scene(animationList[item].c_str(),
+                                            SceneAsset::LoadScene::Skeleton | SceneAsset::LoadScene::Animation,
+                                            0.f, 0.f, &animation_info);
+          if (!sceneAsset.animations.empty()) {
             animation = sceneAsset.animations[0];
+          }
+          animation_params.optimized = false;
         }
         character.currentAnimation = animation;
         character.animTime = 0;
@@ -232,6 +242,32 @@ void imgui_render()
       if (ImGui::Button("Reset speed")) {
         animation_params.speed = 1.0f;
       }
+      ImGui::SliderFloat("Tolerance (mm)", &animation_params.tolerance, 0, 100);
+      ImGui::SliderFloat("Distance (mm)", &animation_params.distance, 0, 1000);
+      if (ImGui::Button("Apply optimize")) {
+        AnimationPtr animation;
+        if (item > 0)
+        {
+          SceneAsset sceneAsset;
+          sceneAsset = load_scene(animationList[item].c_str(),
+                                            SceneAsset::LoadScene::Skeleton | SceneAsset::LoadScene::Animation,
+                                            animation_params.tolerance, animation_params.distance, &animation_info);
+          if (!sceneAsset.animations.empty()) {
+            animation = sceneAsset.animations[0];
+          }
+          animation_params.optimized = (animation_params.tolerance != 0.f || animation_params.distance != 0.f);
+        }
+        character.currentAnimation = animation;
+        character.animTime = 0;
+      }
+      if (animation_params.optimized) {
+        ImGui::Text("Optimized");
+      } else {
+        ImGui::Text("Non optimized");
+      }
+      ImGui::Text("Original: %llu", animation_info.original);
+      ImGui::Text("Optimized: %llu", animation_info.optimized);
+      ImGui::Text("Compressed: %llu", animation_info.compressed);
     }
     ImGui::End();
 
