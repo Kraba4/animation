@@ -56,9 +56,19 @@ struct Scene
 
 static std::unique_ptr<Scene> scene;
 static std::vector<std::string> animationList;
-static bool show_bones = true;
-static bool show_arrows = true;
-static bool show_mesh = true;
+
+
+static struct {
+  bool show_bones = true;
+  bool show_arrows = true;
+  bool show_mesh = true;
+} visualisation_params;
+
+static struct {
+  float speed = 1;
+  bool pause = false;
+  bool loop = true;
+} animation_params;
 
 #include <filesystem>
 static std::vector<std::string> scan_animations(const char *path)
@@ -194,9 +204,9 @@ void imgui_render()
 
     if (ImGui::Begin("Visualisition"))
     {
-      ImGui::Checkbox("Show mesh", &show_mesh);
-      ImGui::Checkbox("Show bones", &show_bones);
-      ImGui::Checkbox("Show arrows", &show_arrows);
+      ImGui::Checkbox("Show mesh", &visualisation_params.show_mesh);
+      ImGui::Checkbox("Show bones", &visualisation_params.show_bones);
+      ImGui::Checkbox("Show arrows", &visualisation_params.show_arrows);
     }
     ImGui::End();
 
@@ -213,6 +223,14 @@ void imgui_render()
         }
         character.currentAnimation = animation;
         character.animTime = 0;
+      }
+      ImGui::Checkbox("Pause", &animation_params.pause);
+      ImGui::Checkbox("Loop", &animation_params.loop);
+      float finishTime =  character.currentAnimation ?  character.currentAnimation->duration() : 0;
+      ImGui::SliderFloat("Animation time", &character.animTime, 0, finishTime);
+      ImGui::SliderFloat("Speed", &animation_params.speed, 0, 3);
+      if (ImGui::Button("Reset speed")) {
+        animation_params.speed = 1.0f;
       }
     }
     ImGui::End();
@@ -249,9 +267,14 @@ void game_update()
   {
     if (character.currentAnimation)
     {
-      character.animTime += get_delta_time();
-      if (character.animTime >= character.currentAnimation->duration())
-        character.animTime = 0;
+      character.animTime += animation_params.pause ? 0 : get_delta_time() * animation_params.speed;
+      if (character.animTime >= character.currentAnimation->duration()) {
+        if (animation_params.loop) {
+          character.animTime = 0;
+        } else {
+          character.animTime = character.currentAnimation->duration();
+        }
+      }
 
       // Samples optimized animation at t = animation_time_.
       ozz::animation::SamplingJob sampling_job;
@@ -289,7 +312,7 @@ static glm::mat4 to_glm(const ozz::math::Float4x4 &tm)
 
 void render_character(const Character &character, const mat4 &cameraProjView, vec3 cameraPosition, const DirectionLight &light)
 {
-  if (show_mesh) {
+  if (visualisation_params.show_mesh) {
     const Material &material = *character.material;
     const Shader &shader = material.get_shader();
 
@@ -334,13 +357,13 @@ void render_character(const Character &character, const mat4 &cameraProjView, ve
       vec3 parentPos = parentTm[3];
       vec3 bonePos = boneTm[3];
       distanceToParent = glm::length(bonePos - parentPos);
-      if (show_bones) {
+      if (visualisation_params.show_bones) {
         constexpr vec3 darkGreenColor = vec3(46.0 / 255, 142.0 / 255, 16.0 / 255);
         draw_bone(parentPos, bonePos, darkGreenColor, 0.1f);
       }
     }
 
-    if (show_arrows) {
+    if (visualisation_params.show_arrows) {
       const float arrowLength = (distanceToParent + 0.1) / 5.0;
       constexpr float arrowSize = 0.004f;
       draw_arrow(boneTm, vec3(0), vec3(arrowLength, 0, 0), vec3(1, 0, 0), arrowSize);
