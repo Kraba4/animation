@@ -9,6 +9,7 @@
 #include <render/debug_bone.h>
 #include <imgui/imgui.h>
 #include "ImGuizmo.h"
+#include "ComboWithFilter.h"
 
 #include "ozz/animation/runtime/animation.h"
 #include "ozz/animation/runtime/local_to_model_job.h"
@@ -55,11 +56,15 @@ struct Scene
 
 static std::unique_ptr<Scene> scene;
 static std::vector<std::string> animationList;
+static bool show_bones = true;
+static bool show_arrows = true;
+static bool show_mesh = true;
 
 #include <filesystem>
 static std::vector<std::string> scan_animations(const char *path)
 {
   std::vector<std::string> animations;
+  animations.push_back("None");
   for (auto &p : std::filesystem::recursive_directory_iterator(path))
   {
     auto filePath = p.path();
@@ -175,8 +180,8 @@ void imgui_render()
     //     ImGui::PopID();
     //   }
     // }
-    const auto &skeleton = *character.skeleton_;
-    size_t nodeCount = skeleton.num_joints();
+    // const auto &skeleton = *character.skeleton_;
+    // size_t nodeCount = skeleton.num_joints();
 
     // if (ImGui::Begin("Skeleton view"))
     // {
@@ -187,26 +192,29 @@ void imgui_render()
     // }
     // ImGui::End();
 
+    if (ImGui::Begin("Visualisition"))
+    {
+      ImGui::Checkbox("Show mesh", &show_mesh);
+      ImGui::Checkbox("Show bones", &show_bones);
+      ImGui::Checkbox("Show arrows", &show_arrows);
+    }
+    ImGui::End();
+
     if (ImGui::Begin("Animation list")) {
-    std::vector<const char *> animations(animationList.size() + 1);
-    animations[0] = "None";
-    for (size_t i = 0; i < animationList.size(); i++)
-      animations[i + 1] = animationList[i].c_str();
-    static int item = 0;
-      if (ImGui::Combo(animations[item], &item, animations.data(), animations.size())) {
-          AnimationPtr animation;
-          if (item > 0)
-          {
-            SceneAsset sceneAsset = load_scene(animations[item],
-                                              SceneAsset::LoadScene::Skeleton | SceneAsset::LoadScene::Animation);
-            if (!sceneAsset.animations.empty())
-              animation = sceneAsset.animations[0];
-          }
-          character.currentAnimation = animation;
-          character.animTime = 0;
+      static int item = 0;
+      if (ImGui::ComboWithFilter("##anim", &item, animationList)) {
+        AnimationPtr animation;
+        if (item > 0)
+        {
+          SceneAsset sceneAsset = load_scene(animationList[item].c_str(),
+                                             SceneAsset::LoadScene::Skeleton | SceneAsset::LoadScene::Animation);
+          if (!sceneAsset.animations.empty())
+            animation = sceneAsset.animations[0];
+        }
+        character.currentAnimation = animation;
+        character.animTime = 0;
       }
     }
-
     ImGui::End();
 
     static ImGuizmo::OPERATION mCurrentGizmoOperation(ImGuizmo::TRANSLATE);
@@ -228,7 +236,7 @@ void imgui_render()
     // character.skeleton.localTm[idx] = glm::inverse(parent >= 0 ? character.skeleton.globalTm[parent] : glm::mat4(1.f)) * globNodeTm;
     character.transform = globNodeTm;
     break;
-  }
+    }
 }
 
 void game_update()
@@ -281,37 +289,40 @@ static glm::mat4 to_glm(const ozz::math::Float4x4 &tm)
 
 void render_character(const Character &character, const mat4 &cameraProjView, vec3 cameraPosition, const DirectionLight &light)
 {
-  const Material &material = *character.material;
-  const Shader &shader = material.get_shader();
+  if (show_mesh) {
+    const Material &material = *character.material;
+    const Shader &shader = material.get_shader();
 
-  shader.use();
-  material.bind_uniforms_to_shader();
-  shader.set_mat4x4("Transform", character.transform);
-  shader.set_mat4x4("ViewProjection", cameraProjView);
-  shader.set_vec3("CameraPosition", cameraPosition);
-  shader.set_vec3("LightDirection", glm::normalize(light.lightDirection));
-  shader.set_vec3("AmbientLight", light.ambient);
-  shader.set_vec3("SunLight", light.lightColor);
+    shader.use();
+    material.bind_uniforms_to_shader();
+    shader.set_mat4x4("Transform", character.transform);
+    shader.set_mat4x4("ViewProjection", cameraProjView);
+    shader.set_vec3("CameraPosition", cameraPosition);
+    shader.set_vec3("LightDirection", glm::normalize(light.lightDirection));
+    shader.set_vec3("AmbientLight", light.ambient);
+    shader.set_vec3("SunLight", light.lightColor);
 
-  size_t boneNumber = character.mesh->bones.size();
-  std::vector<mat4> bones(boneNumber);
+    size_t boneNumber = character.mesh->bones.size();
+    std::vector<mat4> bones(boneNumber);
 
+    const auto &skeleton = *character.skeleton_;
+    size_t nodeCount = skeleton.num_joints();
+    for (size_t i = 0; i < nodeCount; i++)
+    {
+      auto it = character.mesh->bonesMap.find(skeleton.joint_names()[i]);
+      if (it != character.mesh->bonesMap.end())
+      {
+        int boneIdx = it->second;
+        bones[boneIdx] = to_glm(character.models_[i]) * character.mesh->bones[boneIdx].invBindPose;
+      }
+    }
+    shader.set_mat4x4("Bones", bones);
+
+    render(character.mesh);
+  }
+  
   const auto &skeleton = *character.skeleton_;
   size_t nodeCount = skeleton.num_joints();
-  for (size_t i = 0; i < nodeCount; i++)
-  {
-    auto it = character.mesh->bonesMap.find(skeleton.joint_names()[i]);
-    if (it != character.mesh->bonesMap.end())
-    {
-      int boneIdx = it->second;
-      bones[boneIdx] = to_glm(character.models_[i]) * character.mesh->bones[boneIdx].invBindPose;
-    }
-  }
-  shader.set_mat4x4("Bones", bones);
-
-  render(character.mesh);
-
-  // for (const auto &bone : character.mesh->bones)
   for (size_t i = 0; i < nodeCount; i++)
   { 
     float distanceToParent = 0.0f;
@@ -319,29 +330,24 @@ void render_character(const Character &character, const mat4 &cameraProjView, ve
     int parentId = skeleton.joint_parents()[i];
     glm::mat4 boneTm   =  character.transform * to_glm(character.models_[i]);  
     if (parentId != -1 && parentId != 0 && parentId != 1) {
-      // alignas(16) glm::vec3 offset;
-      // ozz::math::Store3Ptr(character.models_[parentId].cols[3] - character.models_[i].cols[3],
-      //                      glm::value_ptr(offset));
-      // glm::mat4 globTm = to_glm(character.models_[i]);    
-      // offset = inverse(globTm) * glm::vec4(offset, .0f);
-
       glm::mat4 parentTm =  character.transform * to_glm(character.models_[parentId]);      
-
       vec3 parentPos = parentTm[3];
-      // vec3 parentPos = parentBone.bindPose[3];
       vec3 bonePos = boneTm[3];
       distanceToParent = glm::length(bonePos - parentPos);
-      constexpr vec3 darkGreenColor = vec3(46.0 / 255, 142.0 / 255, 16.0 / 255);
-      draw_bone(parentPos, bonePos, darkGreenColor, 0.1f);
+      if (show_bones) {
+        constexpr vec3 darkGreenColor = vec3(46.0 / 255, 142.0 / 255, 16.0 / 255);
+        draw_bone(parentPos, bonePos, darkGreenColor, 0.1f);
+      }
     }
 
-    const float arrowLength = (distanceToParent + 0.1) / 5.0;
-    constexpr float arrowSize = 0.004f;
-    draw_arrow(boneTm, vec3(0), vec3(arrowLength, 0, 0), vec3(1, 0, 0), arrowSize);
-    draw_arrow(boneTm, vec3(0), vec3(0, arrowLength, 0), vec3(0, 1, 0), arrowSize);
-    draw_arrow(boneTm, vec3(0), vec3(0, 0, arrowLength), vec3(0, 0, 1), arrowSize);
+    if (show_arrows) {
+      const float arrowLength = (distanceToParent + 0.1) / 5.0;
+      constexpr float arrowSize = 0.004f;
+      draw_arrow(boneTm, vec3(0), vec3(arrowLength, 0, 0), vec3(1, 0, 0), arrowSize);
+      draw_arrow(boneTm, vec3(0), vec3(0, arrowLength, 0), vec3(0, 1, 0), arrowSize);
+      draw_arrow(boneTm, vec3(0), vec3(0, 0, arrowLength), vec3(0, 0, 1), arrowSize);
+    }
   }
-
 }
 
 void game_render()
