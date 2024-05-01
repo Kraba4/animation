@@ -213,7 +213,7 @@ namespace ImGui
         // FIXME-OPT: Use clipper (but we need to disable it on the appearing frame to make sure our call to SetItemDefaultFocus() is processed)
         bool value_changed = false;
 
-        const float expected_w = std::max(GetWindowWidth() - 20, 1.0f);
+        const float expected_w = std::max(500.0f, 1.0f);
         // ImVec2 item_min = GetItemRectMin();
         bool isNewOpen = false;
         float sz = GetFrameHeight();

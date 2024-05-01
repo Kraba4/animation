@@ -18,6 +18,7 @@
 #include "ozz/base/maths/simd_math.h"
 #include "ozz/base/maths/soa_transform.h"
 #include "ozz/animation/offline/animation_optimizer.h"
+#include "ozz/animation/runtime/blending_job.h"
 
 struct UserCamera
 {
@@ -25,6 +26,103 @@ struct UserCamera
   mat4x4 projection;
   vec2 windowSize;
   ArcballCamera arcballCamera;
+};
+
+struct PlaybackController
+{
+public:
+  // Updates animation time if in "play" state, according to playback speed and
+  // given frame time _dt.
+  // Returns true if animation has looped during update
+  void Update(const AnimationPtr &_animation, float _dt)
+  {
+    float new_time = time_ratio_;
+
+    if (play_)
+    {
+      new_time = time_ratio_ + _dt * playback_speed_ / _animation->duration();
+    }
+    if (loop_)
+    {
+      // Wraps in the unit interval [0:1], even for negative values (the reason
+      // for using floorf).
+      time_ratio_ = new_time - floorf(new_time);
+    }
+    else
+    {
+      // Clamps in the unit interval [0:1].
+      time_ratio_ = new_time;
+    }
+  }
+
+  void Reset()
+  {
+    time_ratio_ = 0.f;
+    playback_speed_ = 1.f;
+    play_ = true;
+    loop_ = true;
+  }
+
+  // Current animation time ratio, in the unit interval [0,1], where 0 is the
+  // beginning of the animation, 1 is the end.
+  float time_ratio_;
+
+  // Playback speed, can be negative in order to play the animation backward.
+  float playback_speed_;
+
+  // Animation play mode state: play/pause.
+  bool play_;
+
+  // Animation loop mode.
+  bool loop_;
+};
+
+struct OptimizerController {
+  float tolerance = 0;
+  float distance = 0;
+  bool optimized = false;
+  AnimationInfo animation_info;
+};
+
+struct AnimationLayer
+{
+  // Constructor, default initialization.
+  AnimationLayer(const SkeletonPtr &skeleton, AnimationPtr animation, int animationIndex, const AnimationInfo &animation_info) : 
+          weight(1.f), animation(animation), animationIndex(animationIndex)
+  {
+    controller.Reset();
+    optimizer.animation_info = animation_info;
+    locals.resize(skeleton->num_soa_joints());
+
+    // Allocates a context that matches animation requirements.
+    context = std::make_shared<ozz::animation::SamplingJob::Context>(skeleton->num_joints());
+  }
+
+  bool isAdditive = false;
+  // Playback animation controller. This is a utility class that helps with
+  // controlling animation playback time.
+  PlaybackController controller;
+  OptimizerController optimizer; 
+  int animationIndex = -1;
+  // Blending weight for the layer.
+  float weight;
+
+  // Runtime animation.
+  AnimationPtr animation;
+
+  // Sampling context.
+  std::shared_ptr<ozz::animation::SamplingJob::Context> context;
+
+  // Buffer of local transforms as sampled from animation_.
+  std::vector<ozz::math::SoaTransform> locals;
+  bool visability = true;
+  bool owned_by_blendtree = false;
+};
+
+struct BlendTree1d {
+  float weight = -1;
+  int layersId[3] = {-1, -1, -1};
+  size_t nLayers = 0;
 };
 
 struct Character
@@ -42,8 +140,14 @@ struct Character
   // Buffer of model space matrices.
   std::vector<ozz::math::Float4x4> models_;
 
+  std::vector<AnimationLayer> layers;
+
   AnimationPtr currentAnimation;
-  float animTime = 0;
+  PlaybackController controller;
+  OptimizerController optimizer;
+  int animationIndex = -1;
+
+  std::vector<BlendTree1d> blendtrees;
 };
 
 struct Scene
@@ -82,7 +186,6 @@ static struct {
   bool optimized = false;
 } animation_params;
 
-static AnimationInfo animation_info;
 static int selectedNode = -1;
 
 #include <filesystem>
@@ -214,6 +317,8 @@ void game_init()
     std::move(material),
     sceneAsset.skeleton});
 
+  character.controller.Reset();
+  
   const int num_soa_joints = character.skeleton_->num_soa_joints();
   character.locals_.resize(num_soa_joints);
   const int num_joints = character.skeleton_->num_joints();
@@ -260,41 +365,75 @@ void render_imguizmo(ImGuizmo::OPERATION &mCurrentGizmoOperation, ImGuizmo::MODE
   ImGui::End();
 }
 
+static void playback_controller_inspector(PlaybackController &controller)
+{
+  ImGui::SliderFloat("progress", &controller.time_ratio_, 0.f, 1.f);
+  ImGui::Checkbox("play/pause", &controller.play_);
+  ImGui::Checkbox("is loop", &controller.loop_);
+  ImGui::SliderFloat("speed", &controller.playback_speed_, -2.0f, 2.0f);
+
+  if (ImGui::Button("reset"))
+    controller.Reset();
+}
+
+static void optimizer_inspector(AnimationLayer& character)
+{
+  OptimizerController &optimizer = character.optimizer;
+  ImGui::SliderFloat("Tolerance (mm)", &optimizer.tolerance, 0, 100);
+  ImGui::SliderFloat("Distance (mm)", &optimizer.distance, 0, 1000);
+  if (ImGui::Button("Apply optimize")) {
+    AnimationPtr animation;
+    SceneAsset sceneAsset;
+    ExtraParameters extra = {.tolerance = optimizer.tolerance, .distance = optimizer.distance, .animation_info = &optimizer.animation_info};
+    sceneAsset = load_scene(animationList[character.animationIndex].c_str(),
+                                      SceneAsset::LoadScene::Skeleton | SceneAsset::LoadScene::Animation,
+                                      &extra);
+    if (!sceneAsset.animations.empty()) {
+      animation = sceneAsset.animations[0];
+    }
+    optimizer.optimized = (optimizer.tolerance != 0.f || optimizer.distance != 0.f);
+    character.animation = animation;
+    character.controller.time_ratio_ = 0;
+  }
+  if (optimizer.optimized) {
+    ImGui::Text("Optimized");
+  } else {
+    ImGui::Text("Non optimized");
+  }
+  ImGui::Text("Original: %llu", optimizer.animation_info.original);
+  ImGui::Text("Optimized: %llu", optimizer.animation_info.optimized);
+  ImGui::Text("Compressed: %llu", optimizer.animation_info.compressed);
+}
+
+
+static AnimationPtr animation_list_combo(SceneAsset::LoadScene animation_type, SkeletonPtr ref_pose, int *animationIndex, AnimationInfo *animation_info)
+{
+  static int item = 0;
+  if (ImGui::ComboWithFilter("##anim", &item, animationList)) {
+    AnimationPtr animation;
+    if (item > 0)
+    {
+      ExtraParameters extra = {.animation_info = animation_info};
+      SceneAsset sceneAsset = load_scene(animationList[item].c_str(),
+                                         SceneAsset::LoadScene::Skeleton | SceneAsset::LoadScene::Animation, &extra);
+      if (!sceneAsset.animations.empty()) {
+        animation = sceneAsset.animations[0];
+      }
+      animation_params.optimized = false;
+      if (!sceneAsset.animations.empty()) {
+        *animationIndex = item;
+        return sceneAsset.animations[0];
+      }
+    }
+  }
+  return nullptr;
+}
+
 void imgui_render()
 {
   ImGuizmo::BeginFrame();
   for (Character &character : scene->characters)
   {
-    // character.skeleton.updateLocalTransforms();
-    // const RuntimeSkeleton &skeleton = character.skeleton;
-    // size_t nodeCount = skeleton.ref->nodeCount;
-    // static size_t idx = 0;
-    // if (ImGui::Begin("Skeleton view"))
-    // {
-    //   for (size_t i = 0; i < nodeCount; i++)
-    //   {
-    //     ImGui::Text("%d) %s", int(i), skeleton.ref->names[i].c_str());
-    //     ImGui::SameLine();
-    //     ImGui::PushID(i);
-    //     if (ImGui::Button("edit"))
-    //     {
-    //       idx = i;
-    //     }
-    //     ImGui::PopID();
-    //   }
-    // }
-    // const auto &skeleton = *character.skeleton_;
-    // size_t nodeCount = skeleton.num_joints();
-
-    // if (ImGui::Begin("Skeleton view"))
-    // {
-    //   for (size_t i = 0; i < nodeCount; i++)
-    //   {
-    //     ImGui::Text("%d) %s", int(i), skeleton.joint_names()[i]);
-    //   }
-    // }
-    // ImGui::End();
-
     if (ImGui::Begin("Visualisition"))
     {
       ImGui::Checkbox("Show mesh", &visualisation_params.show_mesh);
@@ -304,57 +443,139 @@ void imgui_render()
     ImGui::End();
 
     static int item = 0;
-    if (ImGui::Begin("Animation list")) {
-      if (ImGui::ComboWithFilter("##anim", &item, animationList)) {
-        AnimationPtr animation;
-        if (item > 0)
+    if (ImGui::Begin("Animation list"))
+    {
+      if (ImGui::Button("Add BlendTree1d")) {
+        character.blendtrees.emplace_back();
+      }
+      for (size_t i = 0; i < character.blendtrees.size(); i++)
+      {
+        BlendTree1d &blendtree = character.blendtrees[i];
+        std::string name = "Blend tree " + std::to_string(i + 1);
+        if (ImGui::TreeNode(name.c_str()))
         {
-          SceneAsset sceneAsset;
-          sceneAsset = load_scene(animationList[item].c_str(),
-                                            SceneAsset::LoadScene::Skeleton | SceneAsset::LoadScene::Animation,
-                                            0.f, 0.f, &animation_info);
-          if (!sceneAsset.animations.empty()) {
-            animation = sceneAsset.animations[0];
+          ImGui::SliderFloat("weight", &blendtree.weight, -1.f, 1.f);
+          if (ImGui::Button("Play all")) {
+             for (int j = 0; j < blendtree.nLayers; ++j) {
+              if (blendtree.layersId[j] != -1) {
+                AnimationLayer &layer = character.layers[blendtree.layersId[j]];
+                layer.controller.play_ = true;
+              }
+             }
           }
-          animation_params.optimized = false;
+          if (ImGui::Button("Stop all")) {
+             for (int j = 0; j < blendtree.nLayers; ++j) {
+              if (blendtree.layersId[j] != -1) {
+                AnimationLayer &layer = character.layers[blendtree.layersId[j]];
+                layer.controller.play_ = false;
+              }
+             }
+          }
+          for (int j = 0; j < blendtree.nLayers; ++j) {
+            if (blendtree.layersId[j] != -1) {
+              AnimationLayer &layer = character.layers[blendtree.layersId[j]];
+              if (layer.visability) {
+                ImGui::PushID(j);
+                ImGui::Text("name: %s", layer.animation->name());
+                // ImGui::SameLine();
+                // if (ImGui::Button("disconnect")) {
+                //   layer.owned_by_blendtree = false;
+                //   blendtree.layers[j] = -1;
+                //   std::swap(blendtree.layers[j], blendtree.layers[blendtree.nLayers - 1]);
+                //   --blendtree.nLayers;
+                //   --j;
+                //   ImGui::PopID();
+                //   continue;
+                // }
+                ImGui::Text("duration: %f", layer.animation->duration());
+                ImGui::SliderFloat("weight", &layer.weight, 0.f, 1.f);
+                // ImGui::Text("%s", layer.isAdditive ? "is additive" : "not additive");
+
+                if (ImGui::TreeNode("controller"))
+                {
+                  playback_controller_inspector(layer.controller);
+                  ImGui::TreePop();
+                }
+                if (ImGui::TreeNode("optimizer"))
+                {
+                  optimizer_inspector(layer);
+                  ImGui::TreePop();
+                }
+                ImGui::PopID();
+              }
+            }
+          }
+          ImGui::TreePop();
         }
-        character.currentAnimation = animation;
-        character.animTime = 0;
       }
-      ImGui::Checkbox("Pause", &animation_params.pause);
-      ImGui::Checkbox("Loop", &animation_params.loop);
-      float finishTime =  character.currentAnimation ?  character.currentAnimation->duration() : 0;
-      ImGui::SliderFloat("Animation time", &character.animTime, 0, finishTime);
-      ImGui::SliderFloat("Speed", &animation_params.speed, 0, 3);
-      if (ImGui::Button("Reset speed")) {
-        animation_params.speed = 1.0f;
-      }
-      ImGui::SliderFloat("Tolerance (mm)", &animation_params.tolerance, 0, 100);
-      ImGui::SliderFloat("Distance (mm)", &animation_params.distance, 0, 1000);
-      if (ImGui::Button("Apply optimize")) {
-        AnimationPtr animation;
-        if (item > 0)
+      ImGui::NewLine(); ImGui::NewLine(); ImGui::NewLine(); ImGui::NewLine(); ImGui::NewLine();
+
+      if (ImGui::Button("Add layer"))
+        ImGui::OpenPopup("Add layer to play");
+      if (ImGui::BeginPopup("Add layer to play"))
+      {
+        int animationIndex = -1;
+        AnimationInfo animation_info;
+        if (AnimationPtr animation = animation_list_combo(SceneAsset::LoadScene::Animation, character.skeleton_,  &animationIndex, &animation_info))
         {
-          SceneAsset sceneAsset;
-          sceneAsset = load_scene(animationList[item].c_str(),
-                                            SceneAsset::LoadScene::Skeleton | SceneAsset::LoadScene::Animation,
-                                            animation_params.tolerance, animation_params.distance, &animation_info);
-          if (!sceneAsset.animations.empty()) {
-            animation = sceneAsset.animations[0];
-          }
-          animation_params.optimized = (animation_params.tolerance != 0.f || animation_params.distance != 0.f);
+          character.layers.emplace_back(character.skeleton_, animation, animationIndex, animation_info);
+          ImGui::CloseCurrentPopup();
         }
-        character.currentAnimation = animation;
-        character.animTime = 0;
+        ImGui::EndPopup();
       }
-      if (animation_params.optimized) {
-        ImGui::Text("Optimized");
-      } else {
-        ImGui::Text("Non optimized");
+      for (size_t i = 0; i < character.layers.size(); i++)
+      {
+        AnimationLayer &layer = character.layers[i];
+        if (layer.visability && !layer.owned_by_blendtree) {
+          ImGui::PushID(i);
+          ImGui::Text("name: %s", layer.animation->name());
+          ImGui::SameLine();
+          // if (ImGui::Button("Delete layer")) {
+          //   layer.weight = 0;
+          //   layer.visability = false;
+          // }
+          ImGui::SameLine();
+          if (ImGui::Button("Connect to blend tree"))
+            ImGui::OpenPopup("Connect to blend tree popup");
+          if (ImGui::BeginPopup("Connect to blend tree popup"))
+          {
+            std::vector<std::string> blendtrees(character.blendtrees.size() + 1);
+            blendtrees[0] = "None";
+            for (size_t i = 1; i < character.blendtrees.size() + 1; i++)
+              blendtrees[i] = "BlendTree " + std::to_string(i);
+            static int item = 0;
+            if (ImGui::ComboWithFilter("", &item, blendtrees))
+            {
+              if (item > 0)
+              {
+                size_t ind = character.blendtrees[item - 1].nLayers;
+                if (ind < 3) {
+                  character.blendtrees[item - 1].layersId[ind] = i;
+                  layer.owned_by_blendtree = true;
+                  ++character.blendtrees[item - 1].nLayers;
+                }
+              }
+              ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+          }
+          ImGui::Text("duration: %f", layer.animation->duration());
+          ImGui::SliderFloat("weight", &layer.weight, 0.f, 1.f);
+          // ImGui::Text("%s", layer.isAdditive ? "is additive" : "not additive");
+
+          if (ImGui::TreeNode("controller"))
+          {
+            playback_controller_inspector(layer.controller);
+            ImGui::TreePop();
+          }
+          if (ImGui::TreeNode("optimizer"))
+          {
+            optimizer_inspector(layer);
+            ImGui::TreePop();
+          }
+          ImGui::PopID();
+        }
       }
-      ImGui::Text("Original: %llu", animation_info.original);
-      ImGui::Text("Optimized: %llu", animation_info.optimized);
-      ImGui::Text("Compressed: %llu", animation_info.compressed);
     }
     ImGui::End();
 
@@ -377,33 +598,109 @@ void imgui_render()
     // character.skeleton.localTm[idx] = glm::inverse(parent >= 0 ? character.skeleton.globalTm[parent] : glm::mat4(1.f)) * globNodeTm;
     character.transform = globNodeTm;
     break;
-    }
+  }
 }
 
 void game_update()
 {
+  float dt = get_delta_time();
   arcball_camera_update(
     scene->userCamera.arcballCamera,
     scene->userCamera.transform,
-    get_delta_time());
+    dt);
   for (Character &character : scene->characters)
   {
-    if (character.currentAnimation)
-    {
-      character.animTime += animation_params.pause ? 0 : get_delta_time() * animation_params.speed;
-      if (character.animTime >= character.currentAnimation->duration()) {
-        if (animation_params.loop) {
-          character.animTime = 0;
+    if (!character.layers.empty()) {
+      for (BlendTree1d &blendtree : character.blendtrees)
+      {
+        float weights[3];
+        if (blendtree.weight < 0) {
+          weights[2] = 0;
+          weights[1] = blendtree.weight - (-1);
+          weights[0] = 1 - weights[1];
         } else {
-          character.animTime = character.currentAnimation->duration();
+          weights[0] = 0;
+          weights[2] = blendtree.weight;
+          weights[1] = 1 - weights[2]; 
+        }
+        for (size_t i = 0; i < blendtree.nLayers; ++i) {
+          character.layers[blendtree.layersId[i]].weight = weights[i];
+        }
+        float avg_duration = 0; // не до конца понял почему именно взвешанная сумма, а не, например, минимум из двух, у которых веса > 0
+                                // а это посмотрел как одногруппники сделали и так же сделал, вроде звучит как будто правильно,
+                                // может я тут не правильно списал даже, в спешке смотрел просто 
+                                // но все равно приходится вручную находить тайминги, когда ноги в одинаковых направлениях, не понял как это автоматически сделать
+        for (size_t i = 0; i < blendtree.nLayers; ++i) {
+          avg_duration += character.layers[blendtree.layersId[i]].animation->duration() * weights[i];
+        }
+        for (size_t i = 0; i < blendtree.nLayers; ++i) {
+          character.layers[blendtree.layersId[i]].controller.playback_speed_ = character.layers[blendtree.layersId[i]].animation->duration() / avg_duration;
         }
       }
+      for (AnimationLayer &layer : character.layers)
+      {
+        layer.controller.Update(layer.animation, dt);
+
+        // Samples optimized animation at t = animation_time_.
+        ozz::animation::SamplingJob sampling_job;
+        sampling_job.animation = layer.animation.get();
+        sampling_job.context = layer.context.get();
+        sampling_job.ratio = layer.controller.time_ratio_;
+        sampling_job.output = ozz::make_span(layer.locals);
+        if (!sampling_job.Run())
+        {
+          debug_error("sampling_job failed");
+        }
+      }
+
+      // Prepares blending layers.
+      int numLayer = character.layers.size();
+      std::vector<ozz::animation::BlendingJob::Layer> layers, additive;
+
+      for (int i = 0; i < numLayer; ++i)
+      {
+        ozz::animation::BlendingJob::Layer layer;
+        layer.transform = ozz::make_span(character.layers[i].locals);
+        layer.weight = character.layers[i].weight;
+        if (!character.layers[i].isAdditive)
+          layers.push_back(layer);
+        else
+          additive.push_back(layer);
+      }
+
+      // Setups blending job.
+      ozz::animation::BlendingJob blend_job;
+      blend_job.threshold = 0.1;
+      blend_job.layers = ozz::make_span(layers);
+      blend_job.additive_layers = ozz::make_span(additive);
+      blend_job.rest_pose = character.skeleton_->joint_rest_poses();
+      blend_job.output = ozz::make_span(character.locals_);
+
+      // Blends.
+      if (!blend_job.Run())
+      {
+        debug_error("blend_job failed");
+        continue;
+      }
+    }
+    else if (character.currentAnimation)
+    {
+      character.controller.Update(character.currentAnimation, dt);
+      // character.animTime += animation_params.pause ? 0 : dt * animation_params.speed;
+      // if (character.animTime >= character.currentAnimation->duration()) {
+      //   if (animation_params.loop) {
+      //     character.animTime = 0;
+      //   } else {
+      //     character.animTime = character.currentAnimation->duration();
+      //   }
+      // }
 
       // Samples optimized animation at t = animation_time_.
       ozz::animation::SamplingJob sampling_job;
       sampling_job.animation = character.currentAnimation.get();
       sampling_job.context = character.context_.get();
-      sampling_job.ratio = character.animTime / character.currentAnimation->duration();
+      // sampling_job.ratio = character.animTime / character.currentAnimation->duration();
+      sampling_job.ratio = character.controller.time_ratio_;
       sampling_job.output = ozz::make_span(character.locals_);
       if (!sampling_job.Run())
       {

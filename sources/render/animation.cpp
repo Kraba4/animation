@@ -61,9 +61,9 @@ SkeletonPtr create_skeleton(const aiNode &ai_root)
   return std::shared_ptr<ozz::animation::Skeleton>(std::move(skeleton));
 }
 
-AnimationPtr create_animation(const aiAnimation &ai_animation, const SkeletonPtr &skeleton, float tolerance, float distance, AnimationInfo* animation_info)
+AnimationPtr create_animation(const aiAnimation &ai_animation, const SkeletonPtr &a_skeleton, ExtraParameters* extra)
 {
-
+  const SkeletonPtr &skeleton = extra && extra->ref_pose ? extra->ref_pose : a_skeleton;
   ozz::animation::offline::RawAnimation raw_animation;
   
   // Sets animation duration (to 1.4s).
@@ -73,6 +73,13 @@ AnimationPtr create_animation(const aiAnimation &ai_animation, const SkeletonPtr
   raw_animation.name = ai_animation.mName.C_Str();
 
   raw_animation.tracks.resize(skeleton->num_joints());
+
+  std::vector<ozz::math::Transform> restPose(skeleton->num_joints());
+
+  for (int jointIdx = 0; jointIdx < skeleton->num_joints(); jointIdx++)
+  {
+    restPose[jointIdx] = ozz::animation::GetJointLocalRestPose(*skeleton, jointIdx);
+  }
 
   for (int jointIdx = 0; jointIdx < skeleton->num_joints(); jointIdx++)
   {
@@ -127,8 +134,8 @@ AnimationPtr create_animation(const aiAnimation &ai_animation, const SkeletonPtr
     }
     else
     {
-      ozz::math::Transform jointTm = ozz::animation::GetJointLocalRestPose(*skeleton, jointIdx);
-
+      // ozz::math::Transform jointTm = ozz::animation::GetJointLocalRestPose(*skeleton, jointIdx);
+      const ozz::math::Transform &jointTm = restPose[jointIdx];
       track.translations =
           {ozz::animation::offline::RawAnimation::TranslationKey{0.f, jointTm.translation}};
       track.rotations =
@@ -160,17 +167,22 @@ AnimationPtr create_animation(const aiAnimation &ai_animation, const SkeletonPtr
   // a new runtime animation instance.
   // This operation will fail and return an empty unique_ptr if the RawAnimation
   // isn't valid.
-  animation_info->original = raw_animation.size();
-  if (tolerance != 0 || distance != 0) {
-    ozz::animation::offline::AnimationOptimizer optimizer;
-    optimizer.setting.tolerance = tolerance * 1e-3f; optimizer.setting.distance = distance * 1e-3f; 
-    ozz::animation::offline::RawAnimation raw_optimized_animation;
-    optimizer(raw_animation, *skeleton, &raw_optimized_animation);
-    raw_animation = std::move(raw_optimized_animation);
-  } 
-  ozz::unique_ptr<ozz::animation::Animation> animation = builder(raw_animation);
-  animation_info->optimized = raw_animation.size();
-  animation_info->compressed = animation->size();
+  ozz::unique_ptr<ozz::animation::Animation> animation;
+  if(extra != nullptr && extra->animation_info != nullptr){
+    extra->animation_info->original = raw_animation.size();
+    if (extra->tolerance != 0 || extra->distance != 0) {
+      ozz::animation::offline::AnimationOptimizer optimizer;
+      optimizer.setting.tolerance = extra->tolerance * 1e-3f; optimizer.setting.distance = extra->distance * 1e-3f; 
+      ozz::animation::offline::RawAnimation raw_optimized_animation;
+      optimizer(raw_animation, *skeleton, &raw_optimized_animation);
+      raw_animation = std::move(raw_optimized_animation);
+    } 
+    animation = builder(raw_animation);
+    extra->animation_info->optimized = raw_animation.size();
+    extra->animation_info->compressed = animation->size();
+  } else {
+    animation = builder(raw_animation);
+  }
   // ...use the animation as you want...
 
   debug_log("animation %s raw size = %d, runtime size = %d", animation->name(), raw_animation.size(), animation->size());

@@ -73,7 +73,6 @@ static bool sdl_event_handler()
   bool running = true;
   const bool WantCaptureMouse = ImGui::GetIO().WantCaptureMouse;
   const bool WantCaptureKeyboard = ImGui::GetIO().WantCaptureKeyboard;
-  static int u = 0;
   while (SDL_PollEvent(&event))
   {
     ImGui_ImplSDL2_ProcessEvent(&event);

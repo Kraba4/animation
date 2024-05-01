@@ -32,4 +32,11 @@ struct SceneAsset
   };
 };
 
-SceneAsset load_scene(const char *path, int load_flags, float animation_tolerance = 0.f, float animation_distance = 0.f,  AnimationInfo *animation_info = nullptr);
+struct ExtraParameters {
+  float tolerance = 0.f;
+  float distance = 0.f;  
+  AnimationInfo *animation_info = nullptr; 
+  SkeletonPtr ref_pose = nullptr;
+};
+
+SceneAsset load_scene(const char *path, int load_flags, ExtraParameters* extra = nullptr);

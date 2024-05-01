@@ -8,9 +8,9 @@
 
 MeshPtr create_mesh(const aiMesh *mesh);
 SkeletonPtr create_skeleton(const aiNode &ai_node);
-AnimationPtr create_animation(const aiAnimation &ai_animation, const SkeletonPtr &skeleton, float tolerance, float distance, AnimationInfo* animation_info);
+AnimationPtr create_animation(const aiAnimation &ai_animation, const SkeletonPtr &skeleton, ExtraParameters* extra);
 
-SceneAsset load_scene(const char *path, int load_flags, float animation_tolerance, float animation_distance, AnimationInfo* animation_info)
+SceneAsset load_scene(const char *path, int load_flags, ExtraParameters* extra)
 {
   Assimp::Importer importer;
   importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS, false);
@@ -40,7 +40,7 @@ SceneAsset load_scene(const char *path, int load_flags, float animation_toleranc
   {
     result.animations.reserve(scene->mNumAnimations);
     for (size_t i = 0; i < scene->mNumAnimations; i++)
-      if (AnimationPtr animation = create_animation(*scene->mAnimations[i], result.skeleton, animation_tolerance, animation_distance, animation_info))
+      if (AnimationPtr animation = create_animation(*scene->mAnimations[i], result.skeleton, extra))
         result.animations.emplace_back(std::move(animation));
   }
 
