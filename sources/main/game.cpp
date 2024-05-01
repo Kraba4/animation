@@ -23,6 +23,7 @@ struct UserCamera
 {
   glm::mat4 transform;
   mat4x4 projection;
+  vec2 windowSize;
   ArcballCamera arcballCamera;
 };
 
@@ -55,6 +56,13 @@ struct Scene
 
 };
 
+static glm::mat4 to_glm(const ozz::math::Float4x4 &tm)
+{
+  glm::mat4 result;
+  memcpy(glm::value_ptr(result), &tm.cols[0], sizeof(glm::mat4));
+  return result;
+}
+
 static std::unique_ptr<Scene> scene;
 static std::vector<std::string> animationList;
 
@@ -75,6 +83,7 @@ static struct {
 } animation_params;
 
 static AnimationInfo animation_info;
+static int selectedNode = -1;
 
 #include <filesystem>
 static std::vector<std::string> scan_animations(const char *path)
@@ -88,6 +97,81 @@ static std::vector<std::string> scan_animations(const char *path)
       animations.push_back(filePath.string());
   }
   return animations;
+}
+
+void resize_window_handler(const glm::vec2 &newSize)
+{
+  scene->userCamera.windowSize = newSize;
+}
+
+int IntersectRaySphere(glm::vec3 p, glm::vec3 d, glm::vec3 s_c, float s_r,  float &t, glm::vec3 &q) 
+{
+  glm::vec3 m = p - s_c; 
+  float b = glm::dot(m, d); 
+  float c = glm::dot(m, m) - s_r * s_r; 
+
+  // Exit if r’s origin outside s (c > 0) and r pointing away from s (b > 0) 
+  if (c > 0.0f && b > 0.0f) return 0; 
+  float discr = b*b - c; 
+
+  // A negative discriminant corresponds to ray missing sphere 
+  if (discr < 0.0f) return 0; 
+
+  // Ray now found to intersect sphere, compute smallest t value of intersection
+  t = -b - std::sqrt(discr); 
+
+  // If t is negative, ray started inside sphere so clamp t to zero 
+  if (t < 0.0f) t = 0.0f; 
+  q = p + t * d; 
+
+  return 1;
+}
+
+// static glm::vec3 eye;
+// static glm::vec3 dir;
+// static glm::vec3 clickedPosViewport;
+void mouse_click_handler(const SDL_MouseButtonEvent &e)
+{
+  if (e.button == SDL_BUTTON_RIGHT)
+  {
+    glm::vec3 right = scene->userCamera.transform[0];
+    glm::vec3 up = scene->userCamera.transform[1];
+    glm::vec3 forward = scene->userCamera.transform[2];
+    glm::vec3 eye = scene->userCamera.transform[3];
+
+    float viewportSizeY = 0.01f * std::tan(45.0f * DegToRad) * 2;
+    float viewportSizeX = viewportSizeY * get_aspect_ratio();
+
+    glm::vec3 leftUpCornerViewport = eye + 0.01f * forward - viewportSizeX / 2 * right +  viewportSizeY / 2 * up;
+    glm::vec3 clickedPosViewport = leftUpCornerViewport
+                                   + (e.x / scene->userCamera.windowSize[0]) * viewportSizeX * right 
+                                   - (e.y / scene->userCamera.windowSize[1]) * viewportSizeY * up;
+    glm::vec3 rayDir = glm::normalize(clickedPosViewport - eye);
+    // dir = rayDir;
+
+    float minDist = 1000;
+    size_t intersectNodeIndex = -1;
+    for (Character &character : scene->characters)
+    {
+      const auto &skeleton = *character.skeleton_;
+      size_t nodeCount = skeleton.num_joints();
+      for (size_t i = 0; i < nodeCount; ++i) 
+      {
+        glm::mat4 nodeTm = to_glm(character.models_[i]);      
+        vec3 nodePos = character.transform * nodeTm[3];
+        float distToNode;
+        glm::vec3 intersectionPoint;
+        float sphereRadius = 0.05;
+        if (IntersectRaySphere(clickedPosViewport, rayDir, nodePos, sphereRadius, distToNode, intersectionPoint)) {
+          if (distToNode < minDist) {
+            minDist = distToNode;
+            intersectNodeIndex = i;
+          }
+        }
+      }
+    }
+    selectedNode = intersectNodeIndex;
+  }
 }
 
 void game_init()
@@ -113,10 +197,11 @@ void game_init()
 
   scene->userCamera.transform = calculate_transform(scene->userCamera.arcballCamera);
 
-  input.onMouseButtonEvent += [](const SDL_MouseButtonEvent &e) { arccam_mouse_click_handler(e, scene->userCamera.arcballCamera); };
+  input.onMouseButtonEvent += [](const SDL_MouseButtonEvent &e) { arccam_mouse_click_handler(e, scene->userCamera.arcballCamera); 
+                                                                  mouse_click_handler(e);};
   input.onMouseMotionEvent += [](const SDL_MouseMotionEvent &e) { arccam_mouse_move_handler(e, scene->userCamera.arcballCamera); };
   input.onMouseWheelEvent += [](const SDL_MouseWheelEvent &e) { arccam_mouse_wheel_handler(e, scene->userCamera.arcballCamera); };
-
+  input.onResizeEvent     += [](const glm::vec2 &newSize) { resize_window_handler(newSize); };
 
   auto material = make_material("character", "sources/shaders/character_vs.glsl", "sources/shaders/character_ps.glsl");
   std::fflush(stdout);
@@ -169,6 +254,8 @@ void render_imguizmo(ImGuizmo::OPERATION &mCurrentGizmoOperation, ImGuizmo::MODE
       if (ImGui::RadioButton("World", mCurrentGizmoMode == ImGuizmo::WORLD))
         mCurrentGizmoMode = ImGuizmo::WORLD;
     }
+
+    ImGui::Text("Selected Node: %s", selectedNode == -1 ? "None" : scene->characters[0].skeleton_->joint_names()[selectedNode]);
   }
   ImGui::End();
 }
@@ -337,13 +424,6 @@ void game_update()
       continue;
     }
   }
-}
-
-static glm::mat4 to_glm(const ozz::math::Float4x4 &tm)
-{
-  glm::mat4 result;
-  memcpy(glm::value_ptr(result), &tm.cols[0], sizeof(glm::mat4));
-  return result;
 }
 
 void render_character(const Character &character, const mat4 &cameraProjView, vec3 cameraPosition, const DirectionLight &light)

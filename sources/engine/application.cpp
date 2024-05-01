@@ -73,6 +73,7 @@ static bool sdl_event_handler()
   bool running = true;
   const bool WantCaptureMouse = ImGui::GetIO().WantCaptureMouse;
   const bool WantCaptureKeyboard = ImGui::GetIO().WantCaptureKeyboard;
+  static int u = 0;
   while (SDL_PollEvent(&event))
   {
     ImGui_ImplSDL2_ProcessEvent(&event);
@@ -94,7 +95,14 @@ static bool sdl_event_handler()
 
       case SDL_MOUSEWHEEL: if (!WantCaptureMouse) input.event_process(event.wheel); break;
 
-      case SDL_WINDOWEVENT: break;
+      case SDL_WINDOWEVENT: 
+      {
+        int width, height;
+        SDL_GL_GetDrawableSize(context.window, &width, &height);
+        input.event_process(glm::vec2(width, height));
+      }
+        break;
+      
     }
   }
   return running;

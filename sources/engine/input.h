@@ -3,7 +3,7 @@
 #include <functional>
 #include <SDL2/SDL_keyboard.h>
 #include <SDL2/SDL_events.h>
-
+#include "3dmath.h"
 
 
 class Input
@@ -35,7 +35,7 @@ public:
   Event<SDL_MouseButtonEvent> onMouseButtonEvent;
   Event<SDL_MouseMotionEvent> onMouseMotionEvent;
   Event<SDL_MouseWheelEvent> onMouseWheelEvent;
-
+  Event<glm::vec2> onResizeEvent;
   void event_process(const SDL_KeyboardEvent &event)
   {
     onKeyboardEvent(event);
@@ -51,6 +51,7 @@ public:
   void event_process(const SDL_MouseButtonEvent &event) { onMouseButtonEvent(event); }
   void event_process(const SDL_MouseMotionEvent &event) { onMouseMotionEvent(event); }
   void event_process(const SDL_MouseWheelEvent &event) { onMouseWheelEvent(event); }
+  void event_process(const glm::vec2 &newSize) { onResizeEvent(newSize); }
 
   float get_key(SDL_Keycode keycode)
   {
