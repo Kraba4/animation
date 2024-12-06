@@ -5,7 +5,7 @@
 
 glm::mat4 calculate_transform(const ArcballCamera &camera)
 {
-  float y = camera.curRotation.y;
+  float y = camera.curRotation.x;
   float x = camera.curRotation.x ;
   vec3 direction = vec3(cos(x) * cos(y), sin(y), sin(x) * cos(y));
 
